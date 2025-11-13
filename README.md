@@ -44,8 +44,5 @@ GPS ortho camera.
 ## Reusable Modules
 
 - `src/grid_api.py` — production ready. Provides `load_grid`, `save_grid`, and
-  `get_grid`. Works headless; can be called from Unity via Python bindings or reworked
-  as a C# layer that honours the same JSON contract.
-- `src/editor_prototype.py` — prototype only. Source of ideas for Unity integration, but
-  the final overlay should implement its own rendering and input while reusing the grid
-  persistence helpers.
+  `get_grid`. Works headless; can be called via Python bindings.
+- `src/editor_prototype.py` — prototype only.

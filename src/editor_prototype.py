@@ -1,31 +1,51 @@
 """
 Phase 1 prototype editor that overlays an editable occupancy grid on top of a webcam.
 
-Keeping this prototype self-contained lets us validate the UX and data flow before
-hooking it into the Unity overlay (Phase 2). The heavy lifting lives in `run_editor`
-so that `main` can stay as a thin entrypoint for hardcoded prototype settings.
+The tool lets designers validate grid editing behaviour before wiring the logic into
+the Unity overlay. All grid storage flows through `grid_api`, ensuring the prototype
+and downstream systems share the same persistence format.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import Dict, List, Sequence
 import cv2  # type: ignore
 
-from grid_api import Grid, load_grid, save_grid, DEFAULT_GRID_PATH
+from grid_api import (
+    Grid,
+    load_grid,
+    save_grid,
+    DEFAULT_GRID_PATH,
+    FREE,
+    OBSTACLE,
+    HOME,
+)
+
+# Lookup table mapping numeric cell states to printable symbols. This keeps console
+# snapshots readable while still operating on integers internally.
+DISPLAY_SYMBOL: Dict[int, str] = {
+    FREE: "O",
+    OBSTACLE: "X",
+    HOME: "H",
+}
 
 
 @dataclass
 class EditorState:
-    """Simple container that shares context between the render loop and mouse handler."""
+    """
+    Bundle of data that needs to be accessed by both the render loop and mouse handler.
+
+    Storing the mutable grid alongside cached cell sizes keeps OpenCV callbacks simple
+    and avoids passing a long parameter list around.
+    """
 
     grid: Grid
     rows: int
     cols: int
     cell_width: float = 1.0
     cell_height: float = 1.0
-    auto_save: bool = True
     grid_path: Path = DEFAULT_GRID_PATH
 
 
@@ -33,10 +53,10 @@ def _seed_grid(rows: int, cols: int, persisted: Sequence[Sequence[int]]) -> Grid
     """
     Build a grid with the requested dimensions, copying any persisted values that fit.
 
-    The helper ensures that mismatched dimensions from older saves do not break the
-    prototype; extra cells default back to FREE (0).
+    When the saved grid uses different dimensions the mismatched cells are clipped,
+    keeping the prototype resilient while allowing manual edits of the JSON file.
     """
-    seeded = [[0 for _ in range(cols)] for _ in range(rows)]
+    seeded = [[FREE for _ in range(cols)] for _ in range(rows)]
     max_row = min(rows, len(persisted))
     for row_idx in range(max_row):
         row = persisted[row_idx]
@@ -48,31 +68,36 @@ def _seed_grid(rows: int, cols: int, persisted: Sequence[Sequence[int]]) -> Grid
 
 def _draw_grid_overlay(frame, state: EditorState) -> None:
     """
-    Mutate the frame in-place so the user can see grid lines and obstacle highlights.
+    Draw the current grid state on top of the video frame.
+
+    Obstacles and the home marker receive tinted rectangles, and grid lines are
+    rendered afterward so the user can place cells accurately.
     """
     rows, cols = state.rows, state.cols
     height, width = frame.shape[:2]
 
-    # Cache cell dimensions for the mouse handler (converted to floats for precision).
+    # Cache cell dimensions for later use by the mouse handler.
     state.cell_width = width / cols
     state.cell_height = height / rows
 
     tinted = frame.copy()
     for row_idx in range(rows):
         for col_idx in range(cols):
-            if state.grid[row_idx][col_idx] != 1:
+            cell_value = state.grid[row_idx][col_idx]
+            if cell_value == FREE:
                 continue
             top_left = (int(col_idx * state.cell_width), int(row_idx * state.cell_height))
             bottom_right = (
                 int((col_idx + 1) * state.cell_width),
                 int((row_idx + 1) * state.cell_height),
             )
-            # Draw a semi-transparent rectangle for obstacles so the camera feed stays visible.
+            fill_colour = (30, 30, 30) if cell_value == OBSTACLE else (60, 120, 255)
+            # Apply a semi-transparent overlay so the camera feed remains visible.
             cv2.rectangle(
                 tinted,
                 top_left,
                 bottom_right,
-                color=(30, 30, 30),  # Dark grey tint
+                color=fill_colour,
                 thickness=-1,  # Filled rectangle
             )
 
@@ -88,8 +113,17 @@ def _draw_grid_overlay(frame, state: EditorState) -> None:
         cv2.line(frame, (0, y), (width, y), color=(255, 255, 255), thickness=1)
 
 
+def _format_grid_snapshot(grid: Grid) -> str:
+    """Return a string representation of the grid using the display symbols."""
+    return "\n".join(
+        " ".join(DISPLAY_SYMBOL.get(cell, "?") for cell in row) for row in grid
+    )
+
+
 def _handle_mouse(event, x, y, _flags, state: EditorState) -> None:
-    """Toggle the clicked cell and optionally write it back to disk immediately."""
+    """
+    Cycle the clicked cell through FREE -> OBSTACLE -> HOME on each left click.
+    """
     if event != cv2.EVENT_LBUTTONDOWN:
         return
 
@@ -99,20 +133,27 @@ def _handle_mouse(event, x, y, _flags, state: EditorState) -> None:
     if not (0 <= row < state.rows and 0 <= col < state.cols):
         return
 
-    # Simple toggle between FREE (0) and OBSTACLE (1).
-    state.grid[row][col] = 1 - state.grid[row][col]
+    current = state.grid[row][col]
 
-    if state.auto_save:
-        save_grid(state.grid, state.grid_path)
-        print(f"[auto-save] Updated cell ({row}, {col}) -> {state.grid[row][col]}")
+    updated_value = {
+        FREE: OBSTACLE,
+        OBSTACLE: HOME,
+        HOME: FREE,
+    }[current]
+
+    state.grid[row][col] = updated_value
+
+    symbol = DISPLAY_SYMBOL.get(updated_value, "?")
+    print(f"[update] cell ({row}, {col}) -> {symbol}")
+    print(_format_grid_snapshot(state.grid))
 
 
 def run_editor(rows: int, cols: int, *, grid_path: Path | str = DEFAULT_GRID_PATH) -> None:
     """
     Launch the Phase 1 webcam-based editor for the specified grid dimensions.
 
-    This function owns the OpenCV lifecycle so the eventual Unity integration can reuse
-    the grid logic without inheriting webcam setup code.
+    The OpenCV lifecycle lives here so future integrations can reuse the grid logic
+    without inheriting prototype-specific camera setup.
     """
     persisted = load_grid(grid_path)
     grid = _seed_grid(rows, cols, persisted)
@@ -132,7 +173,7 @@ def run_editor(rows: int, cols: int, *, grid_path: Path | str = DEFAULT_GRID_PAT
     if not camera.isOpened():
         raise RuntimeError("Could not access webcam. Check that a camera is connected.")
 
-    print("Controls: left click to toggle, 's' to save, 'q' to quit.")
+    print("Controls: left click cycles cells, 's' saves, 'q' quits.")
     try:
         while True:
             ok, frame = camera.read()
