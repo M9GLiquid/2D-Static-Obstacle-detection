@@ -9,7 +9,7 @@ The grid.json file is included in the api folder for easy distribution - just
 copy the entire api folder to use this API.
 
 Example:
-    from map_api import get_map, get_symbol, get_symbols
+    from layout_api import get_map, get_symbol, get_symbols
     
     # Get map with default colored symbols
     map_data = get_map()
