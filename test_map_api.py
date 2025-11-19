@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Test script for the map_api module.
+Test script for the layout-api module.
 
-This script demonstrates all the functions in map_api and verifies they work correctly.
+This script demonstrates all the functions in layout-api and verifies they work correctly.
 
 Usage:
     python3 test_map_api.py
@@ -223,7 +223,7 @@ def test_custom_symbol_examples():
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
-    print("Map API Test Suite")
+    print("Layout API Test Suite")
     print("=" * 60)
     print()
     
